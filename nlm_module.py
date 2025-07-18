@@ -503,13 +503,13 @@ class NeuralLogicMachine(nn.Module):
             nn.Linear(hidden_dim, num_edge_transformation_types)
         )
 
-        # Shape predictor
-        self.shape_predictor = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, 4)  # [height_ratio, width_ratio, height_offset, width_offset]
-        )
+        # # Shape predictor
+        # self.shape_predictor = nn.Sequential(
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     nn.ReLU(),
+        #     nn.Dropout(0.2),
+        #     nn.Linear(hidden_dim, 4)  # [height_ratio, width_ratio, height_offset, width_offset]
+        # )
 
         # Initialize weights properly
         self._init_weights()
@@ -757,16 +757,16 @@ class NeuralLogicMachine(nn.Module):
                     # Store these as edge_type_labels for use in training
                     result.edge_type_labels = filtered_edge_type
         
-        # Add shape prediction using global graph embedding
+        # Add padding prediction using global graph embedding
         if hasattr(data, 'batch'):
             graph_embedding = scatter_mean(h, data.batch, dim=0)  # [num_graphs, hidden_dim]
         else:
             graph_embedding = h.mean(dim=0, keepdim=True)  # [1, hidden_dim]
         
-        # Predict shape transformation
-        shape_params = self.shape_predictor(graph_embedding)  # [num_graphs or 1, 4]
-        shape_params = shape_params.view(-1, 4)
-        result.shape_params = shape_params
+        # # Predict shape transformation
+        # shape_params = self.shape_predictor(graph_embedding)  # [num_graphs or 1, 4]
+        # shape_params = shape_params.view(-1, 4)
+        # result.shape_params = shape_params
         
         return result
 
@@ -967,9 +967,6 @@ class NLMReasoningModule(BaseReasoningModule):
                 # Get original test input for reference
                 test_input, _ = task.test_pairs[i]
                 
-                # Get the input shape for shape prediction reference
-                input_shape = np.array(test_input).shape
-                
                 # Skip preprocessing if already done
                 if not hasattr(test_graph, 'preprocessed') or not test_graph.preprocessed:
                     # This code would run only if the graph wasn't preprocessed earlier
@@ -1013,41 +1010,48 @@ class NLMReasoningModule(BaseReasoningModule):
                     
                     output = self.model(test_graph)
 
+                    # input_shape = np.array(test_input).shape
+
                     # Get the predicted shape from the model
-                    predicted_shape = input_shape  # Default to input shape if no prediction available
-                    shape_info = None
+                    # predicted_shape = input_shape  # Default to input shape if no prediction available
+                    # shape_info = None
                     
-                    if hasattr(output, 'shape_params'):
-                        try:
-                            # Get the predicted shape parameters
-                            shape_params = output.shape_params.cpu().numpy()[0]  # [height_ratio, width_ratio, height_offset, width_offset]
-                            
-                            # Calculate new dimensions
-                            height_ratio, width_ratio, height_offset, width_offset = shape_params
-                            predicted_height = max(1, int(round(input_shape[0] * height_ratio + height_offset)))
-                            predicted_width = max(1, int(round(input_shape[1] * width_ratio + width_offset)))
-                            predicted_shape = (predicted_height, predicted_width)
-                            
-                            shape_info = {
-                                "predicted_params": shape_params.tolist(),
-                                "input_shape": input_shape,
-                                "predicted_shape": predicted_shape
-                            }
-                        except Exception as e:
-                            print(f"Error in shape prediction: {e}")
-                            predicted_shape = input_shape
-                            shape_info = {
-                                "error": str(e),
-                                "input_shape": input_shape,
-                                "predicted_shape": input_shape
-                            }
+                    # if hasattr(output, 'shape_params'):
+                    #     try:
+                    #         # Get the predicted shape parameters
+                    #         shape_params = output.shape_params.cpu().numpy()[0]  # [height_ratio, width_ratio, height_offset, width_offset]
+                    #         
+                    #         # Calculate new dimensions
+                    #         height_ratio, width_ratio, height_offset, width_offset = shape_params
+                    #         predicted_height = max(1, int(round(input_shape[0] * height_ratio + height_offset)))
+                    #         predicted_width = max(1, int(round(input_shape[1] * width_ratio + width_offset)))
+                    #         predicted_shape = (predicted_height, predicted_width)
+                    #         
+                    #         shape_info = {
+                    #             "predicted_params": shape_params.tolist(),
+                    #             "input_shape": input_shape,
+                    #             "predicted_shape": predicted_shape
+                    #         }
+                    #     except Exception as e:
+                    #         print(f"Error in shape prediction: {e}")
+                    #         predicted_shape = input_shape
+                    #         shape_info = {
+                    #             "error": str(e),
+                    #             "input_shape": input_shape,
+                    #             "predicted_shape": input_shape
+                    #         }
 
                     # Apply edge transformation predictions if available
                     if hasattr(self.model, 'predict_edge_transformations'):
                         output = self.model.predict_edge_transformations(output)
 
                     # Convert model output back to grid with predicted shape
-                    prediction = task.graph_to_grid(output, predicted_shape)
+                    prediction = task.graph_to_grid(output)
+
+                    shape_info = {
+                        "input_shape": np.array(test_input).shape,
+                        "predicted_shape": np.array(prediction).shape
+                    }
                 
                 # Enhance prediction with blackboard insights if available
                 if insights and insights.get('high_confidence_predictions'):
@@ -1091,7 +1095,7 @@ class NLMReasoningModule(BaseReasoningModule):
                         "action": f"predict_example_{i}_with_node_and_edge_transformation",
                         "shape": prediction.shape,
                         "edge_transformations": edge_transformation_info,
-                        "shape_prediction": shape_info,  # Add shape prediction info
+                        "shape_prediction": shape_info,  # Add grid shape info
                         "used_blackboard_insights": bool(insights and (insights.get('predicates') or 
                                                         insights.get('high_confidence_predictions'))),
                         "used_precomputed_graphs": True
@@ -1272,53 +1276,52 @@ class NLMReasoningModule(BaseReasoningModule):
             total = valid_mask.sum().item()
 
 
-            # Process shape predictions based on padding vs non-padding classification
-            shape_correct = 0
-            shape_total = 0
-            shape_loss = 0.0
+            # Process padding predictions based on padding vs non-padding classification
+            padding_correct = 0
+            padding_total = 0
+            padding_loss = 0.0
             try:
-                # Shape prediction: classify nodes as padding (10) vs non-padding (not 10)
+                # Padding prediction: classify nodes as padding (10) vs non-padding (not 10)
                 # Convert predictions and targets to binary classification
                 pred_is_padding = (pred_labels == self.PADDING_VALUE).float()  # 1 if predicted as padding, 0 otherwise
                 target_is_padding = (targets == self.PADDING_VALUE).float()    # 1 if target is padding, 0 otherwise
 
-                # Compute binary cross-entropy loss for shape prediction
-                shape_loss = F.binary_cross_entropy(pred_is_padding, target_is_padding)
+                # Compute binary cross-entropy loss for padding prediction
+                padding_loss = F.binary_cross_entropy(pred_is_padding, target_is_padding)
+                total_loss += 0.2 * padding_loss
 
-                # Compute shape accuracy (correct padding/non-padding classification)
-                shape_correct = (pred_is_padding.round() == target_is_padding).sum().item()
-                shape_total = targets.size(0)
+                # Compute padding accuracy (correct padding/non-padding classification)
+                padding_correct = (pred_is_padding.round() == target_is_padding).sum().item()
+                padding_total = targets.size(0)
+                
+                # # Make sure dimensions match
+                # pred_shape = output_batch.shape_params
+                # target_shape = batch.shape_params
 
-                """# Make sure dimensions match
-                pred_shape = output_batch.shape_params
-                target_shape = batch.shape_params
+                # # Set shape_total to the batch size
+                # shape_total = pred_shape.size(0)
+
+                # # Ensure the dimensions match
+                # if len(pred_shape.shape) == 2 and len(target_shape.shape) == 1:
+                #     # Reshape target to match prediction
+                #     batch_size = pred_shape.shape[0]
+                #     if target_shape.shape[0] == batch_size * 4:
+                #         target_shape = target_shape.view(batch_size, 4)
+
+                # # Compute loss
+                # shape_loss = F.mse_loss(pred_shape, target_shape)
                 
-                # Set shape_total to the batch size
-                shape_total = pred_shape.size(0)
-                
-                # Ensure the dimensions match
-                if len(pred_shape.shape) == 2 and len(target_shape.shape) == 1:
-                    # Reshape target to match prediction
-                    batch_size = pred_shape.shape[0]
-                    if target_shape.shape[0] == batch_size * 4:
-                        target_shape = target_shape.view(batch_size, 4)
-                
-                # Compute loss
-                shape_loss = F.mse_loss(pred_shape, target_shape)
-                total_loss += 0.2 * shape_loss
-                
-                # Check exact shape correctness
-                for i in range(pred_shape.size(0)):
-                    # Check if shape parameters match exactly
-                    is_shape_correct = torch.all(pred_shape[i].round() == target_shape[i].round()).item()
-                    shape_correct += int(is_shape_correct)"""
+                # # Check exact shape correctness
+                # for i in range(pred_shape.size(0)):
+                #     # Check if shape parameters match exactly
+                #     is_shape_correct = torch.all(pred_shape[i].round() == target_shape[i].round()).item()
+                #     shape_correct += int(is_shape_correct)
                 
             except Exception as e:
-                print(f"Error computing shape loss: {e}")
-                shape_loss = 0.0
-                # Keep shape metrics at 0 if there was an error
-                shape_correct = 0
-                shape_total = 0
+                print(f"Error computing padding loss: {e}")
+                padding_loss = 0.0
+                padding_correct = 0
+                padding_total = 0
                 
             # Initialize edge metrics
             edge_trans_correct = 0
@@ -1380,7 +1383,7 @@ class NLMReasoningModule(BaseReasoningModule):
                     graph_valid = graph_targets != self.PADDING_VALUE
                     
                     if graph_valid.sum() > 0:
-                        # First check shape correctness
+                        # First check padding correctness
                         shape_is_correct = False
                         
                         # Check shape if shape parameters are available
@@ -1418,8 +1421,8 @@ class NLMReasoningModule(BaseReasoningModule):
                 node_loss.item(),
                 edge_trans_loss if isinstance(edge_trans_loss, float) else edge_trans_loss.item(),
                 grid_loss.item() if isinstance(grid_loss, torch.Tensor) else grid_loss,
-                shape_loss if isinstance(shape_loss, float) else shape_loss.item(),
-                shape_correct, shape_total,
+                padding_loss if isinstance(padding_loss, float) else padding_loss.item(),
+                padding_correct, padding_total,
                 correct, total,
                 grid_correct, grid_total,
                 edge_trans_correct, edge_trans_total,

@@ -214,6 +214,13 @@ class Task:
             )
             graph.y = self.pad_target_grid(output_grid).view(-1)
 
+            input_shape = np.array(input_grid).shape
+            output_shape = np.array(output_grid).shape
+            graph.input_attention_mask = self.create_attention_mask(input_shape)
+            graph.output_attention_mask = self.create_attention_mask(output_shape)
+            graph.input_shape = input_shape
+            graph.output_shape = output_shape
+
             # Create output graph with the same edge types for comparison
             output_graph = self.grid_to_graph(
                 output_grid,
@@ -255,6 +262,13 @@ class Task:
             )
             graph.y = self.pad_target_grid(output_grid).view(-1)
 
+            input_shape = np.array(input_grid).shape
+            output_shape = np.array(output_grid).shape
+            graph.input_attention_mask = self.create_attention_mask(input_shape)
+            graph.output_attention_mask = self.create_attention_mask(output_shape)
+            graph.input_shape = input_shape
+            graph.output_shape = output_shape
+
             # Create output graph with the same edge types for comparison
             output_graph = self.grid_to_graph(
                 output_grid,
@@ -289,6 +303,58 @@ class Task:
         # Track feature extraction methods used
         self.features = {}
     
+    def create_attention_mask(self, original_shape):
+        """
+        Create attention mask for valid (non-padded) positions
+        
+        Args:
+            original_shape: Tuple of (rows, cols) for the original grid
+            
+        Returns:
+            Boolean tensor of shape (900,) where True = valid content, False = padding
+        """
+        rows, cols = original_shape
+        
+        # Create 2D mask
+        mask_2d = torch.zeros(30, 30, dtype=torch.bool)
+        mask_2d[:rows, :cols] = True
+        
+        # Flatten to match node ordering
+        return mask_2d.flatten()
+    
+    def get_valid_node_indices(self, attention_mask):
+        """
+        Get indices of valid (non-padded) nodes
+        
+        Args:
+            attention_mask: Boolean tensor of shape (900,)
+            
+        Returns:
+            Tensor of valid node indices
+        """
+        return torch.where(attention_mask)[0]
+    
+    def apply_attention_mask_to_features(self, features, attention_mask, fill_value=0.0):
+        """
+        Apply attention mask to node features
+        
+        Args:
+            features: Node features tensor
+            attention_mask: Boolean mask
+            fill_value: Value to use for masked positions
+            
+        Returns:
+            Masked features tensor
+        """
+        if features.dim() == 1:
+            masked_features = features.clone()
+            masked_features[~attention_mask] = fill_value
+        else:
+            masked_features = features.clone()
+            masked_features[~attention_mask] = fill_value
+            
+        return masked_features
+
     def pad_target_grid(self, output_grid):
         """
         Pads output grid to match 30x30 = 900 nodes.
@@ -604,129 +670,193 @@ class Task:
 
         return input_graph
     
-    def extract_grid_size(slef, graph_data):
+    def infer_shape_from_boundary(self, preds_np):
         """
-        Converts graph data into the predicted grid size
-
+        Infer output grid shape by finding the boundary of non-padding values
+        
         Args:
-            graph_data: PyG Data object with node predictions 
-
+            preds_np: Numpy array of 900 predictions
+            
         Returns:
-            Tuple of predicted width and height
+            Tuple of (height, width) for the inferred shape
         """
-        # Get predictions from graph
-        if hasattr(graph_data, 'x'):
-            preds = graph_data.x
+        # Reshape predictions to 30x30 grid
+        pred_grid = preds_np.reshape(30, 30)
+        
+        # Find positions that are NOT padding (value 10)
+        non_padding_mask = (pred_grid != self.PADDING_VALUE)
+        
+        # Find bounding box of content
+        if np.any(non_padding_mask):
+            # Get row and column indices of non-padding content
+            content_rows, content_cols = np.where(non_padding_mask)
             
-            # Convert to class labels
-            if preds.dim() == 2 and preds.size(1) > 1:
-                preds = preds.argmax(dim=1)
-                
-            preds_np = preds.cpu().detach().numpy()
+            # Find bounding box
+            min_row, max_row = content_rows.min(), content_rows.max()
+            min_col, max_col = content_cols.min(), content_cols.max()
             
-            # Initialize pred dimensions (if no 10 is found it defaults to 30)
-            pred_width = 30
-            pred_height = 30
+            # Calculate dimensions (inclusive bounds)
+            height = max_row - min_row + 1
+            width = max_col - min_col + 1
             
-            # Scan the first row for predicted width
-            for node_idx in range(30):
-                if preds_np[node_idx] == 10:
-                    pred_width = node_idx + 1
-                    break
-
-            # Scan the leftmode column for predicted height
-            node_idx = 0
-            while node_idx < min(len(preds_np), 900):
-                node_idx += 30
-                if preds_np[node_idx] == 10:
-                    pred_width = node_idx + 1
-                    break
-
-            return (pred_width, pred_height)
+            # Ensure reasonable bounds
+            height = max(1, min(30, height))
+            width = max(1, min(30, width))
+            
+            return (height, width)
         else:
-            # Fallback: return default 30x30
-            return (30, 30)
+            # If everything is padding, return minimal size
+            return (1, 1)
+
+    def map_predictions_to_shape(self, preds_np, target_shape):
+        """
+        Map predictions to target shape, handling the coordinate transformation
+        
+        Args:
+            preds_np: Numpy array of 900 predictions
+            target_shape: Target (height, width)
+            
+        Returns:
+            Output grid as numpy array
+        """
+        rows, cols = target_shape
+        output_grid = np.zeros(target_shape, dtype=np.int64)
+        
+        # For small grids (most common), use direct mapping
+        if rows <= 30 and cols <= 30:
+            # Direct mapping from 30x30 to target size
+            for r in range(rows):
+                for c in range(cols):
+                    node_idx = r * 30 + c
+                    if node_idx < len(preds_np):
+                        # Only copy non-padding values
+                        pred_value = preds_np[node_idx]
+                        if pred_value != self.PADDING_VALUE:
+                            output_grid[r, c] = pred_value
+        else:
+            # For larger grids (rare), use scaling
+            scale_r = 30.0 / rows
+            scale_c = 30.0 / cols
+            
+            for r in range(rows):
+                for c in range(cols):
+                    # Map from output coords to 30x30 coords
+                    source_r = min(29, int(r * scale_r))
+                    source_c = min(29, int(c * scale_c))
+                    node_idx = source_r * 30 + source_c
+                    
+                    if node_idx < len(preds_np):
+                        pred_value = preds_np[node_idx]
+                        if pred_value != self.PADDING_VALUE:
+                            output_grid[r, c] = pred_value
+        
+        return output_grid
     
     def graph_to_grid(self, graph_data, output_shape=None):
         """
-        Convert graph data back to grid format, using predicted shape if available
+        Convert graph data back to grid format, inferring shape from predicted boundaries
         
         Args:
             graph_data: PyG Data object with node predictions
-            output_shape: Shape of output grid (optional, will use predicted shape if available)
+            output_shape: Shape of output grid (optional, will infer from predictions if None)
             
         Returns:
             Grid as numpy array
         """
-
-        """# Check if we should use predicted shape
-        if output_shape is None and hasattr(graph_data, 'shape_params'):
-            # Get shape prediction parameters
-            shape_params = graph_data.shape_params
-            
-            # If it's a batch, use the first example's parameters
-            if shape_params.dim() > 1:
-                shape_params = shape_params[0]
-                
-            # Extract parameters
-            height_ratio, width_ratio, height_offset, width_offset = shape_params.cpu().detach().numpy()
-            
-            # Calculate predicted dimensions from original shape (assumed to be 30x30 if not specified)
-            original_shape = (30, 30)  # Default assumption
-            if hasattr(graph_data, 'original_shape'):
-                original_shape = graph_data.original_shape
-                
-            predicted_height = max(1, int(round(original_shape[0] * height_ratio + height_offset)))
-            predicted_width = max(1, int(round(original_shape[1] * width_ratio + width_offset)))
-            
-            # Use predicted shape
-            output_shape = (predicted_height, predicted_width)
-        
-        # Default to original shape if no shape provided or predicted
-        if output_shape is None:
-            output_shape = (30, 30)  # Default grid size"""
-        
-        if output_shape is None:
-            output_shape = self.extract_grid_size(graph_data)
-
         # Get predictions from graph
-        if hasattr(graph_data, 'x'):
-            preds = graph_data.x
+        if not hasattr(graph_data, 'x'):
+            return np.zeros(output_shape or (30, 30), dtype=np.int64)
+        
+        preds = graph_data.x
+        
+        # Convert to class labels
+        if preds.dim() == 2 and preds.size(1) > 1:
+            preds = preds.argmax(dim=1)
             
-            # Convert to class labels
-            if preds.dim() == 2 and preds.size(1) > 1:
-                preds = preds.argmax(dim=1)
+        preds_np = preds.cpu().detach().numpy()
+        
+        # If output_shape is explicitly provided, use it
+        if output_shape is not None:
+            return self.map_predictions_to_shape(preds_np, output_shape)
+        
+        # Otherwise, infer shape from the boundary of non-padding predictions
+        inferred_shape = self.infer_shape_from_boundary(preds_np)
+        
+        return self.map_predictions_to_shape(preds_np, inferred_shape)
+
+    # def graph_to_grid(self, graph_data, output_shape=None):
+    #     """
+    #     Convert graph data back to grid format, using predicted shape if available
+        
+    #     Args:
+    #         graph_data: PyG Data object with node predictions
+    #         output_shape: Shape of output grid (optional, will use predicted shape if available)
+            
+    #     Returns:
+    #         Grid as numpy array
+    #     """
+    #     # Check if we should use predicted shape
+    #     if output_shape is None and hasattr(graph_data, 'shape_params'):
+    #         # Get shape prediction parameters
+    #         shape_params = graph_data.shape_params
+            
+    #         # If it's a batch, use the first example's parameters
+    #         if shape_params.dim() > 1:
+    #             shape_params = shape_params[0]
                 
-            # Reshape to grid
-            rows, cols = output_shape
-            preds_np = preds.cpu().detach().numpy()
+    #         # Extract parameters
+    #         height_ratio, width_ratio, height_offset, width_offset = shape_params.cpu().detach().numpy()
             
-            # Create output grid
-            output_grid = np.zeros(output_shape, dtype=np.int64)
-            
-            # Determine scaling factors to map from node indices to grid positions
-            # This handles cases where the output grid is larger or smaller than the input
-            scale_r = min(30, rows) / 30.0  # Scale from standard 30x30 to actual rows
-            scale_c = min(30, cols) / 30.0  # Scale from standard 30x30 to actual cols
-            
-            # Fill the grid with predicted values
-            for node_idx in range(min(len(preds_np), 900)):  # Limit to max 900 nodes (30x30)
-                # Convert node index to 2D coordinates in standard 30x30 grid
-                r_orig = node_idx // 30
-                c_orig = node_idx % 30
+    #         # Calculate predicted dimensions from original shape
+    #         original_shape = getattr(graph_data, 'original_shape', (30, 30))
                 
-                # Scale to output dimensions
-                r_scaled = int(r_orig * scale_r)
-                c_scaled = int(c_orig * scale_c)
-                
-                # Ensure within bounds
-                if r_scaled < rows and c_scaled < cols:
-                    output_grid[r_scaled, c_scaled] = preds_np[node_idx]
+    #         predicted_height = max(1, int(round(original_shape[0] * height_ratio + height_offset)))
+    #         predicted_width = max(1, int(round(original_shape[1] * width_ratio + width_offset)))
             
-            return output_grid
-        else:
-            # Fallback: return zeros grid
-            return np.zeros(output_shape, dtype=np.int64)
+    #         # Use predicted shape
+    #         output_shape = (predicted_height, predicted_width)
+        
+    #     # Default to original shape if no shape provided or predicted
+    #     if output_shape is None:
+    #         output_shape = getattr(graph_data, 'original_shape', (30, 30))
+        
+    #     # Get predictions from graph
+    #     if hasattr(graph_data, 'x'):
+    #         preds = graph_data.x
+            
+    #         # Convert to class labels
+    #         if preds.dim() == 2 and preds.size(1) > 1:
+    #             preds = preds.argmax(dim=1)
+                
+    #         # Reshape to grid
+    #         rows, cols = output_shape
+    #         preds_np = preds.cpu().detach().numpy()
+            
+    #         # Create output grid
+    #         output_grid = np.zeros(output_shape, dtype=np.int64)
+            
+    #         # Determine scaling factors to map from node indices to grid positions
+    #         scale_r = min(30, rows) / 30.0  # Scale from standard 30x30 to actual rows
+    #         scale_c = min(30, cols) / 30.0  # Scale from standard 30x30 to actual cols
+            
+    #         # Fill the grid with predicted values
+    #         for node_idx in range(min(len(preds_np), 900)):  # Limit to max 900 nodes (30x30)
+    #             # Convert node index to 2D coordinates in standard 30x30 grid
+    #             r_orig = node_idx // 30
+    #             c_orig = node_idx % 30
+                
+    #             # Scale to output dimensions
+    #             r_scaled = int(r_orig * scale_r)
+    #             c_scaled = int(c_orig * scale_c)
+                
+    #             # Ensure within bounds
+    #             if r_scaled < rows and c_scaled < cols:
+    #                 output_grid[r_scaled, c_scaled] = preds_np[node_idx]
+            
+    #         return output_grid
+    #     else:
+    #         # Fallback: return zeros grid
+    #         return np.zeros(output_shape, dtype=np.int64)
             
     def log_reasoning_step(self, module_name, prediction=None, confidence=None, time_taken=None, details=None):
         """

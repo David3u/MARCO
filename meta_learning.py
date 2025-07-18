@@ -165,7 +165,7 @@ class MetaLearningTrainer:
         
     def compute_loss(self, batch, module=None):
         """
-        Compute loss with shape-aware components
+        Compute loss with padding-aware components
         """
         if batch is None:
             return torch.tensor(0.0, device=self.device, requires_grad=True)
@@ -198,21 +198,21 @@ class MetaLearningTrainer:
         node_loss = F.cross_entropy(predictions[valid_mask], targets[valid_mask])
         total_loss = node_loss
         
-        # Add shape prediction loss based on padding vs non-padding classification
+        # Add padding prediction loss based on padding vs non-padding classification
         try:
-            # Shape prediction: classify nodes as padding (10) vs non-padding (not 10)
+            # Padding prediction: classify nodes as padding (10) vs non-padding (not 10)
             # Convert predictions and targets to binary classification
             pred_labels = predictions.argmax(dim=1)
             pred_is_padding = (pred_labels == padding_value).float()  # 1 if predicted as padding, 0 otherwise
             target_is_padding = (targets == padding_value).float()    # 1 if target is padding, 0 otherwise
 
-            # Compute binary cross-entropy loss for shape prediction
-            shape_loss = F.binary_cross_entropy(pred_is_padding, target_is_padding)
+            # Compute binary cross-entropy loss for padding prediction
+            padding_loss = F.binary_cross_entropy(pred_is_padding, target_is_padding)
 
             # Add to total loss with weight
-            total_loss = total_loss + 0.25 * shape_loss
+            total_loss = total_loss + 0.25 * padding_loss
         except Exception as e:
-            print(f"Error computing shape loss: {e}")
+            print(f"Error computing padding loss: {e}")
         
         # Make sure loss requires gradients
         if not total_loss.requires_grad:
@@ -295,14 +295,14 @@ class MetaLearningTrainer:
                 total = valid_mask.sum().item()
                 accuracy = correct / total if total > 0 else 0.0
                 
-                # Extract shape predictions based on padding classification
+                # Extract padding predictions based on padding classification
                 shape_correct = 0
                 grid_correct = 0
 
                 if hasattr(batch, 'batch'):
                     num_graphs = batch.batch.max().item() + 1 if batch.batch.numel() > 0 else 1
 
-                    # Evaluate shape predictions using padding classification
+                    # Evaluate padding predictions using padding classification
                     for i in range(num_graphs):
                         graph_mask = batch.batch == i
                         graph_preds = pred_labels[graph_mask]
@@ -779,7 +779,7 @@ class MAMLTrainer(MetaLearningTrainer):
         
         # Track losses for debug and monitoring
         node_losses = []
-        shape_losses = []
+        padding_losses = []
         edge_losses = []
         
         # Perform adaptation steps with reduced learning rate and enhanced stability
@@ -811,22 +811,22 @@ class MAMLTrainer(MetaLearningTrainer):
                 total_loss = node_loss
                 node_losses.append(node_loss.item())
                 
-                # Add shape prediction loss based on padding classification
+                # Add padding prediction loss based on padding classification
                 try:
-                    # Shape prediction: classify nodes as padding vs non-padding
+                    # Padding prediction: classify nodes as padding vs non-padding
                     pred_labels = predictions.argmax(dim=1)
                     pred_is_padding = (pred_labels == 10).float()  # 1 if predicted as padding, 0 otherwise
                     target_is_padding = (targets == 10).float()    # 1 if target is padding, 0 otherwise
 
-                    # Compute binary cross-entropy loss for shape prediction
-                    shape_loss = F.binary_cross_entropy(pred_is_padding, target_is_padding)
-                    shape_losses.append(shape_loss.item())
+                    # Compute binary cross-entropy loss for padding prediction
+                    padding_loss = F.binary_cross_entropy(pred_is_padding, target_is_padding)
+                    padding_losses.append(padding_loss.item())
 
                     # Add to total loss with higher weight during adaptation
-                    shape_weight = 0.3  # Higher than during standard training to focus on this aspect
-                    total_loss = total_loss + shape_weight * shape_loss
+                    padding_weight = 0.3  # Higher than during standard training to focus on this aspect
+                    total_loss = total_loss + padding_weight * padding_loss
                 except Exception as e:
-                    print(f"Error computing shape loss during adaptation: {e}")
+                    print(f"Error computing padding loss during adaptation: {e}")
                 
                 # Add edge transformation loss if available
                 if hasattr(output, 'edge_transformation_pred') and hasattr(batch, 'edge_transformation_labels'):
@@ -909,13 +909,13 @@ class MAMLTrainer(MetaLearningTrainer):
         if hasattr(self, 'adaptation_metrics'):
             self.adaptation_metrics.append({
                 'node_losses': node_losses,
-                'shape_losses': shape_losses if shape_losses else None,
+                'padding_losses': padding_losses if padding_losses else None,
                 'edge_losses': edge_losses if edge_losses else None
             })
         else:
             self.adaptation_metrics = [{
                 'node_losses': node_losses,
-                'shape_losses': shape_losses if shape_losses else None,
+                'padding_losses': padding_losses if padding_losses else None,
                 'edge_losses': edge_losses if edge_losses else None
             }]
             

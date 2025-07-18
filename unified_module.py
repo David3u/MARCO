@@ -122,12 +122,12 @@ class UnifiedReasoningGNN(nn.Module):
         self.linear_rescale = nn.Linear(hidden_dim * 4, hidden_dim)
 
         # Shape predictor
-        self.shape_predictor = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, 4)  # [height_ratio, width_ratio, height_offset, width_offset]
-        )
+        # self.shape_predictor = nn.Sequential(
+        #     nn.Linear(hidden_dim, hidden_dim),
+        #     nn.ReLU(),
+        #     nn.Dropout(0.2),
+        #     nn.Linear(hidden_dim, 4)  # [height_ratio, width_ratio, height_offset, width_offset]
+        # )
     
     def forward(self, data):
         """
@@ -218,10 +218,10 @@ class UnifiedReasoningGNN(nn.Module):
         else:
             graph_embedding = x.mean(dim=0, keepdim=True)
         
-        # Predict shape transformation
-        shape_params = self.shape_predictor(graph_embedding)
-        shape_params = shape_params.view(-1, 4)
-        result.shape_params = shape_params  # The critical change - store in result
+        # # Predict shape transformation
+        # shape_params = self.shape_predictor(graph_embedding)
+        # shape_params = shape_params.view(-1, 4)
+        # result.shape_params = shape_params
 
         return result
     
@@ -467,40 +467,43 @@ class UnifiedReasoningModule(BaseReasoningModule):
                     
                     processed = self.model(test_graph)
                 
-                # Extract the predicted shape from the model
-                predicted_shape = np.array(test_input).shape  # Default to input shape if no prediction available
-                shape_info = None
+                # # Extract the predicted shape from the model
+                # predicted_shape = np.array(test_input).shape  # Default to input shape if no prediction available
+                # shape_info = None
                 
-                if hasattr(processed, 'shape_params'):
-                    try:
-                        # Get the predicted shape parameters
-                        shape_params = processed.shape_params.cpu().numpy()[0]  # [height_ratio, width_ratio, height_offset, width_offset]
-                        
-                        # Calculate new dimensions
-                        height_ratio, width_ratio, height_offset, width_offset = shape_params
-                        predicted_height = max(1, int(round(np.array(test_input).shape[0] * height_ratio + height_offset)))
-                        predicted_width = max(1, int(round(np.array(test_input).shape[1] * width_ratio + width_offset)))
-                        predicted_shape = (predicted_height, predicted_width)
-                        
-                        shape_info = {
-                            "predicted_params": shape_params.tolist(),
-                            "input_shape": np.array(test_input).shape,
-                            "predicted_shape": predicted_shape
-                        }
-                    except Exception as e:
-                        print(f"Error in shape prediction: {e}")
-                        predicted_shape = np.array(test_input).shape
-                        shape_info = {
-                            "error": str(e),
-                            "input_shape": np.array(test_input).shape,
-                            "predicted_shape": np.array(test_input).shape
-                        }
+                # if hasattr(processed, 'shape_params'):
+                #     try:
+                #         # Get the predicted shape parameters
+                #         shape_params = processed.shape_params.cpu().numpy()[0]  # [height_ratio, width_ratio, height_offset, width_offset]
+                #
+                #         # Calculate new dimensions
+                #         height_ratio, width_ratio, height_offset, width_offset = shape_params
+                #         predicted_height = max(1, int(round(np.array(test_input).shape[0] * height_ratio + height_offset)))
+                #         predicted_width = max(1, int(round(np.array(test_input).shape[1] * width_ratio + width_offset)))
+                #         predicted_shape = (predicted_height, predicted_width)
+                #
+                #         shape_info = {
+                #             "predicted_params": shape_params.tolist(),
+                #             "input_shape": np.array(test_input).shape,
+                #             "predicted_shape": predicted_shape
+                #         }
+                #     except Exception as e:
+                #         print(f"Error in shape prediction: {e}")
+                #         predicted_shape = np.array(test_input).shape
+                #         shape_info = {
+                #             "error": str(e),
+                #             "input_shape": np.array(test_input).shape,
+                #             "predicted_shape": np.array(test_input).shape
+                #         }
                 
-                # Convert to grid with the predicted shape
-                prediction = task.graph_to_grid(
-                    processed, 
-                    predicted_shape
-                )
+
+                # Convert to grid 
+                prediction = task.graph_to_grid(processed)
+
+                shape_info = {
+                    "input_shape": np.array(test_input).shape,
+                    "predicted_shape": np.array(prediction).shape
+                }
                 
                 # Enhance prediction with blackboard insights if available
                 if insights and insights.get('high_confidence_predictions'):
@@ -524,7 +527,7 @@ class UnifiedReasoningModule(BaseReasoningModule):
                 
                 predictions.append(prediction)
                 
-                # Log reasoning step and include edge transformation and shape prediction info
+                # Log reasoning step and include edge transformation and grid shape info
                 confidence = float(processed.transformation_logits.max(dim=1)[0].mean().item())
                 
                 # Extract edge transformation predictions if available
@@ -866,48 +869,27 @@ class UnifiedReasoningModule(BaseReasoningModule):
         correct = (pred_labels[valid_mask] == targets[valid_mask]).sum().item()
         total = valid_mask.sum().item()
         
-        # Process shape predictions based on padding vs non-padding classification
-        shape_correct = 0
-        shape_total = 0
-        shape_loss = 0.0
+        # Process padding predictions based on padding vs non-padding classification
+        padding_correct = 0
+        padding_total = 0
+        padding_loss = 0.0
         try:
-            # Shape prediction: classify nodes as padding (10) vs non-padding (not 10)
+            # Padding prediction: classify nodes as padding (10) vs non-padding (not 10)
             # Convert predictions and targets to binary classification
             pred_is_padding = (pred_labels == self.PADDING_VALUE).float()  # 1 if predicted as padding, 0 otherwise
             target_is_padding = (targets == self.PADDING_VALUE).float()    # 1 if target is padding, 0 otherwise
 
-            # Only consider valid nodes (exclude already padded nodes in input)
-            valid_mask = targets != self.PADDING_VALUE
-            if valid_mask.sum() > 0:
-                # Compute binary cross-entropy loss for shape prediction
-                shape_loss = F.binary_cross_entropy(pred_is_padding[valid_mask], target_is_padding[valid_mask])
-                total_loss += 0.2 * shape_loss
+            padding_loss = F.binary_cross_entropy(pred_is_padding, target_is_padding)
+            total_loss += 0.2 * padding_loss
 
-                # Compute shape accuracy (correct padding/non-padding classification)
-                shape_correct = (pred_is_padding[valid_mask].round() == target_is_padding[valid_mask]).sum().item()
-                shape_total = valid_mask.sum().item()
-            else:
-                # If no valid nodes, use all nodes
-                shape_loss = F.binary_cross_entropy(pred_is_padding, target_is_padding)
-                total_loss += 0.2 * shape_loss
+            padding_correct = (pred_is_padding.round() == target_is_padding).sum().item()
+            padding_total = targets.size(0)
 
-                shape_correct = (pred_is_padding.round() == target_is_padding).sum().item()
-                shape_total = targets.size(0)
-                
         except Exception as e:
-            print(f"Error computing shape loss: {e}")
-            shape_loss = 0.0
-            # Keep shape metrics at 0 if there was an error
-            shape_correct = 0
-            shape_total = 0
-            
-        except Exception as e:
-            print(f"Error computing shape loss: {e}")
-            import traceback
-            traceback.print_exc()
-            shape_loss = 0.0
-            shape_correct = 0
-            shape_total = 0
+            print(f"Error computing padding loss: {e}")
+            padding_loss = 0.0
+            padding_correct = 0
+            padding_total = 0
 
         # Initialize edge metrics
         edge_trans_correct = 0
@@ -1002,13 +984,13 @@ class UnifiedReasoningModule(BaseReasoningModule):
                     graph_valid = graph_targets != self.PADDING_VALUE
                     
                     if graph_valid.sum() > 0:
-                        # Check shape correctness using padding classification
+                        # Check padding correctness using padding classification
                         graph_pred_labels = graph_preds.argmax(dim=1)
 
-                        # Shape is correct if padding/non-padding classification is correct
+                        # Padding is correct if padding/non-padding classification is correct
                         pred_is_padding = (graph_pred_labels == self.PADDING_VALUE)
                         target_is_padding = (graph_targets == self.PADDING_VALUE)
-                        shape_is_correct = (pred_is_padding == target_is_padding).all().item()
+                        padding_is_correct = (pred_is_padding == target_is_padding).all().item()
 
                         # Now check node values for non-padding nodes only
                         non_padding_mask = graph_targets != self.PADDING_VALUE
@@ -1017,8 +999,8 @@ class UnifiedReasoningModule(BaseReasoningModule):
                         else:
                             nodes_correct = True  # No non-padding nodes to check
 
-                        # Grid is correct only if both shape and nodes are correct
-                        is_correct = shape_is_correct and nodes_correct
+                        # Grid is correct only if both padding and nodes are correct
+                        is_correct = padding_is_correct and nodes_correct
                         grid_correct += int(is_correct)
                         
                         # Binary grid loss: 1 if not correct, 0 if correct
@@ -1042,8 +1024,8 @@ class UnifiedReasoningModule(BaseReasoningModule):
             node_loss.item(),
             edge_trans_loss if isinstance(edge_trans_loss, float) else edge_trans_loss.item(),
             grid_loss.item() if isinstance(grid_loss, torch.Tensor) else grid_loss,
-            shape_loss if isinstance(shape_loss, float) else shape_loss.item(),
-            shape_correct, shape_total,
+            padding_loss if isinstance(padding_loss, float) else padding_loss.item(),
+            padding_correct, padding_total,
             correct, total,
             grid_correct, grid_total,
             edge_trans_correct, edge_trans_total,

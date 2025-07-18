@@ -375,14 +375,14 @@ def train_model(model, tasks, num_epochs=1000, learning_rate=0.001,
     dataloader = model._prepare_training_data(tasks, batch_size=batch_size, num_workers=0)
 
     history = {
-        "loss": [], 
+        "loss": [],
         "node_loss": [],
         "edge_trans_loss": [],
         "edge_type_loss": [],
         "grid_loss": [],
-        "shape_loss": [],
-        "shape_accuracy": [],
-        "node_accuracy": [], 
+        "padding_loss": [],
+        "padding_accuracy": [],
+        "node_accuracy": [],
         "grid_accuracy": [],
         "edge_trans_accuracy": [],
         "edge_type_accuracy": [],
@@ -398,9 +398,9 @@ def train_model(model, tasks, num_epochs=1000, learning_rate=0.001,
         epoch_edge_trans_loss = 0.0
         epoch_edge_type_loss = 0.0
         epoch_grid_loss = 0.0
-        epoch_shape_loss = 0.0
-        epoch_shape_correct = 0
-        epoch_shape_total = 0
+        epoch_padding_loss = 0.0
+        epoch_padding_correct = 0
+        epoch_padding_total = 0
         epoch_correct = 0
         epoch_total = 0
         epoch_grid_correct = 0
@@ -416,8 +416,8 @@ def train_model(model, tasks, num_epochs=1000, learning_rate=0.001,
                 batch = batch.to(device)
                 training_results = model._training_step(batch, optimizer, node_loss_fn)
 
-                (batch_loss, batch_node_loss, batch_edge_trans_loss, batch_grid_loss, batch_shape_loss,
-                 batch_shape_correct, batch_shape_total,
+                (batch_loss, batch_node_loss, batch_edge_trans_loss, batch_grid_loss, batch_padding_loss,
+                 batch_padding_correct, batch_padding_total,
                  batch_correct, batch_total, batch_grid_correct, batch_grid_total,
                  batch_edge_trans_correct, batch_edge_trans_total,
                  batch_edge_type_correct, batch_edge_type_total, batch_edge_type_loss) = training_results
@@ -427,9 +427,9 @@ def train_model(model, tasks, num_epochs=1000, learning_rate=0.001,
                 epoch_edge_trans_loss += batch_edge_trans_loss / num_batches
                 epoch_edge_type_loss += batch_edge_type_loss / num_batches
                 epoch_grid_loss += batch_grid_loss / num_batches
-                epoch_shape_loss += batch_shape_loss / num_batches
-                epoch_shape_correct += batch_shape_correct
-                epoch_shape_total += batch_shape_total
+                epoch_padding_loss += batch_padding_loss / num_batches
+                epoch_padding_correct += batch_padding_correct
+                epoch_padding_total += batch_padding_total
                 epoch_correct += batch_correct
                 epoch_total += batch_total
                 epoch_grid_correct += batch_grid_correct
@@ -446,7 +446,7 @@ def train_model(model, tasks, num_epochs=1000, learning_rate=0.001,
         # Accuracy computations
         node_acc = epoch_correct / epoch_total if epoch_total > 0 else 0.0
         grid_acc = epoch_grid_correct / epoch_grid_total if epoch_grid_total > 0 else 0.0
-        shape_acc = epoch_shape_correct / epoch_shape_total if epoch_shape_total > 0 else 0.0
+        padding_acc = epoch_padding_correct / epoch_padding_total if epoch_padding_total > 0 else 0.0
         edge_trans_acc = edge_trans_correct / edge_trans_total if edge_trans_total > 0 else 0.0
         edge_type_acc = edge_type_correct / edge_type_total if edge_type_total > 0 else 0.0
 
@@ -456,18 +456,18 @@ def train_model(model, tasks, num_epochs=1000, learning_rate=0.001,
         history["edge_trans_loss"].append(epoch_edge_trans_loss)
         history["edge_type_loss"].append(epoch_edge_type_loss)
         history["grid_loss"].append(epoch_grid_loss)
-        history["shape_loss"].append(epoch_shape_loss)
+        history["padding_loss"].append(epoch_padding_loss)
         history["node_accuracy"].append(node_acc)
         history["grid_accuracy"].append(grid_acc)
-        history["shape_accuracy"].append(shape_acc)
+        history["padding_accuracy"].append(padding_acc)
         history["edge_trans_accuracy"].append(edge_trans_acc)
         history["edge_type_accuracy"].append(edge_type_acc)
 
         scheduler.step()
 
         print(f"Epoch {epoch+1}/{num_epochs} - "
-              f"Loss: {epoch_loss:.4f} (Node: {epoch_node_loss:.4f}, EdgeTrans: {epoch_edge_trans_loss:.4f}, EdgeType: {epoch_edge_type_loss:.4f}, Grid: {epoch_grid_loss:.4f}, Shape: {epoch_shape_loss:.4f}), "
-              f"Node Acc: {node_acc:.4f}, Grid Acc: {grid_acc:.4f}, Shape Acc: {shape_acc:4f}, EdgeTrans Acc: {edge_trans_acc:.4f}, EdgeType Acc: {edge_type_acc:.4f}")
+              f"Loss: {epoch_loss:.4f} (Node: {epoch_node_loss:.4f}, EdgeTrans: {epoch_edge_trans_loss:.4f}, EdgeType: {epoch_edge_type_loss:.4f}, Grid: {epoch_grid_loss:.4f}, Padding: {epoch_padding_loss:.4f}), "
+              f"Node Acc: {node_acc:.4f}, Grid Acc: {grid_acc:.4f}, Padding Acc: {padding_acc:4f}, EdgeTrans Acc: {edge_trans_acc:.4f}, EdgeType Acc: {edge_type_acc:.4f}")
 
         # Save checkpoint and plot
         if (epoch + 1) % 5 == 0 or epoch == num_epochs - 1:
@@ -508,7 +508,7 @@ def plot_training_metrics(metrics, title="Training Metrics", save_path=None):
 
     # Component Losses
     plt.subplot(1, 3, 2)
-    for loss_key in ["node_loss", "grid_loss", "shape_loss", "edge_trans_loss", "edge_type_loss"]:
+    for loss_key in ["node_loss", "grid_loss", "padding_loss", "edge_trans_loss", "edge_type_loss"]:
         if loss_key in metrics:
             plt.plot(metrics[loss_key], label=loss_key.replace('_', ' ').title())
     plt.title("Loss Components")
