@@ -173,4 +173,10 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 *.pt
+
+# Mac OS
+.DS_Store
+
+# Avoid large files 
 /output
+/precomputed_tasks
